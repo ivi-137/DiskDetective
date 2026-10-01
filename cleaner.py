@@ -1,7 +1,8 @@
-"""Move things to the Recycle Bin. Nothing here deletes permanently by itself: every item goes through the
-Windows shell with "undo" enabled, and Windows asks first if an item is too big for the Recycle Bin."""
+"""Remove things: either to the Recycle Bin (recoverable, via the Windows shell with "undo" enabled) or permanently.
+Both are only ever called by the GUI for items rated safe, after a confirmation."""
 import ctypes
 import os
+import stat
 
 from scanner import is_link, long_path
 
@@ -45,6 +46,57 @@ def recycle_in_chunks(paths, chunk=800):
         if part_aborted:
             return False, True
     return ok, aborted
+
+
+def _unlink(lp):
+    try:
+        os.unlink(lp)
+    except PermissionError:                  # read-only file: clear the flag and try once more
+        os.chmod(lp, stat.S_IWRITE)
+        os.unlink(lp)
+
+
+def _remove(path, failed):
+    """Delete one file, link or folder tree. Returns how many items were removed; failures go to `failed`."""
+    lp = long_path(path)
+    try:
+        st = os.lstat(lp)
+    except OSError as exc:
+        failed.append((path, exc))
+        return 0
+    removed = 0
+    try:
+        if stat.S_ISDIR(st.st_mode) and not is_link(st):
+            try:
+                names = os.listdir(lp)
+            except OSError as exc:
+                failed.append((path, exc))
+                return 0
+            for name in names:
+                removed += _remove(os.path.join(path, name), failed)
+            os.rmdir(lp)
+            return removed + 1
+        if stat.S_ISDIR(st.st_mode) or stat.S_ISLNK(st.st_mode):
+            # a junction or symlink: remove the LINK only - never follow it into whatever it points at
+            try:
+                os.rmdir(lp)
+            except OSError:
+                _unlink(lp)
+        else:
+            _unlink(lp)
+        return removed + 1
+    except OSError as exc:                  # in use, access denied, ...
+        failed.append((path, exc))
+        return removed
+
+
+def delete_permanently(paths):
+    """Permanently delete `paths` (files, or folders with everything in them). NOT recoverable and it skips the
+    Recycle Bin. Links are removed, never followed. Returns (items_removed, [(path, error), ...])."""
+    failed, removed = [], 0
+    for path in paths:
+        removed += _remove(path, failed)
+    return removed, failed
 
 
 def targets_for(path, is_dir):

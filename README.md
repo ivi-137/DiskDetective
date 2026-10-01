@@ -1,7 +1,7 @@
 # Disk Detective
 
 A Windows program that shows **how big** every file and folder is, **what it is**, and whether it is
-**safe to delete** - and can clean up the safe stuff for you, through the Recycle Bin.
+**safe to delete** - and can clean up the safe stuff for you, through the Recycle Bin or permanently.
 
 ![Disk Detective](docs/screenshot-dark.png)
 
@@ -19,7 +19,7 @@ knowledge base of ~70 Windows folder rules and ~25 file-type groups (caches, tem
 * **Size map** - a treemap of the selected folder, coloured by verdict. Click to inspect, double-click to zoom in.
 * **Biggest files** - the 500 largest files on the scanned drive/folder.
 * **Quick wins** - every folder rated safe to delete, with the total space you could free (nested folders are
-  counted once). Select some or all and send them to the Recycle Bin in one go.
+  counted once). Select some or all and either send them to the Recycle Bin or delete them permanently, in one go.
 * **Light / dark theme** (follows Windows by default).
 * Fast: a multi-threaded scanner reads a full `C:\` (about 1 million files) in roughly 30-40 s using about 120 MB.
 
@@ -33,14 +33,17 @@ knowledge base of ~70 Windows folder rules and ~25 file-type groups (caches, tem
 
 ## Safety
 
-* Cleaning **only moves things to the Recycle Bin** (restorable), **only items rated safe**, **only after you confirm**.
-  For a folder, only its *contents* move - the folder stays, so programs that expect their Temp/Cache folder keep working.
-  Disk space is released when you empty the Recycle Bin.
+* Two ways to clean, both **only for items rated safe** and **only after you confirm** (the dialog defaults to "No"):
+  **Move to Recycle Bin** (restorable; the disk space is released when you empty the bin) and
+  **Delete permanently** (red button, *cannot be undone*, frees the space immediately).
+  For a folder, only its *contents* are removed - the folder stays, so programs that expect their Temp/Cache folder keep working.
+* Permanent delete never follows junctions or symbolic links out of the folder (the link is removed, its target is
+  not), clears read-only flags, and reports files that are in use instead of failing silently.
 * **Credential guard:** a folder that contains saved logins, cookies, bookmarks or keys (`Login Data`, `Cookies`,
   `logins.json`, `key4.db`, `places.sqlite`, SSH keys, KeePass files...) is never offered and is refused even if
   its name looks like a cache - embedded browsers inside game launchers keep their sessions in cache-like folders.
   Your real Chrome/Firefox/Edge profiles are rated "be careful" and are never touched.
-* Nothing is ever deleted permanently by the program itself.
+* Items rated "be careful", "don't delete", "your files" or "unknown" cannot be removed from inside the program at all.
 * The verdicts are rules of thumb, not a guarantee. When in doubt, don't delete.
 
 ## Download / run
@@ -70,11 +73,11 @@ The exe is unsigned, so Windows SmartScreen may warn the first time ("More info"
 | `diskdetective.py` | The window (Tkinter): tree, size map, tabs, cleaning flow, themes |
 | `scanner.py` | Multi-threaded, read-only folder-size scanner; re-measures part of a scan after a cleanup |
 | `knowledge.py` | The rules: what each folder/file type is and whether it is safe to delete. Add your own with `_r(...)` |
-| `cleaner.py` | Recycle Bin move (Windows shell, "undo" enabled) and the credential guard |
+| `cleaner.py` | Recycle Bin move (Windows shell, "undo" enabled), link-safe permanent delete, and the credential guard |
 | `treemap.py` | Squarified treemap layout |
 | `cli.py` | Text report without a window: `python cli.py C:\ --depth 2` |
 | `make_icon.py` | Draws the app icon with the standard library only |
-| `test_knowledge.py` | Self-checks: `python test_knowledge.py` (includes a real Recycle Bin round trip on temp files) |
+| `test_knowledge.py` | Self-checks: `python test_knowledge.py` (includes a real Recycle Bin round trip and junction-safety checks on temp files) |
 
 Notes: sizes are logical file sizes; online-only OneDrive files count as 0 bytes; junctions and symlinks are not
 followed (nothing is counted twice); `WinSxS` is hard-linked to System32, so its apparent size is larger than the

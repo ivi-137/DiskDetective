@@ -196,6 +196,47 @@ for name in ('data_0', 'index', 'f_000001', 'main.js', 'package.json', 'cookies.
     if cleaner.is_sensitive_name(name):
         fails.append(f'is_sensitive_name wrongly flagged {name}')
 
+# permanent delete: removes everything inside, but never follows a junction out of the folder
+import stat
+import subprocess
+with tempfile.TemporaryDirectory() as tmp:
+    victim = os.path.join(tmp, 'victim')                  # the folder whose *contents* get deleted
+    outside = os.path.join(tmp, 'outside')                # must survive: a junction inside victim points here
+    for rel in ('victim/a.bin', 'victim/sub/b.bin', 'victim/sub/deeper/c.bin', 'outside/precious.txt'):
+        os.makedirs(os.path.dirname(os.path.join(tmp, rel)), exist_ok=True)
+        with open(os.path.join(tmp, rel), 'wb') as fh:
+            fh.write(b'x' * 100)
+    readonly = os.path.join(victim, 'readonly.bin')
+    with open(readonly, 'wb') as fh:
+        fh.write(b'x')
+    os.chmod(readonly, stat.S_IREAD)
+    junction = os.path.join(victim, 'link_to_outside')
+    made = subprocess.run(['cmd', '/c', 'mklink', '/J', junction, outside], capture_output=True).returncode == 0
+    held = os.path.join(victim, 'in_use.bin')
+    with open(held, 'wb') as fh:
+        fh.write(b'x')
+    keep_open = open(held, 'rb')                          # an open handle blocks deletion, like a running program would
+    targets = cleaner.targets_for(victim, True)
+    removed, failed = cleaner.delete_permanently(targets)
+    keep_open.close()
+    left = sorted(os.listdir(victim))
+    if left != ['in_use.bin']:
+        fails.append(f'delete_permanently left the wrong things behind: {left}')
+    if [os.path.basename(p) for p, _ in failed] != ['in_use.bin']:
+        fails.append(f'the in-use file should be reported as failed, got {[os.path.basename(p) for p, _ in failed]}')
+    if not os.path.isfile(os.path.join(outside, 'precious.txt')):
+        fails.append('DANGER: delete_permanently followed a junction and deleted files outside the folder')
+    if not made:
+        fails.append('could not create a test junction (mklink /J failed), junction safety was not tested')
+    if removed < 7:
+        fails.append(f'delete_permanently reported too few removed items: {removed}')
+    removed2, failed2 = cleaner.delete_permanently(cleaner.targets_for(victim, True))      # handle closed now
+    if failed2 or os.listdir(victim):
+        fails.append(f'second pass should remove the last file: {failed2} {os.listdir(victim)}')
+    gone, missing = cleaner.delete_permanently([os.path.join(tmp, 'does-not-exist')])
+    if gone != 0 or len(missing) != 1:
+        fails.append('a missing path should be reported, not crash')
+
 if fmt_size(0) != '0 B' or fmt_size(1536) != '1.5 KB' or fmt_size(5 * 1024 ** 3) != '5.0 GB':
     fails.append('fmt_size wrong')
 
