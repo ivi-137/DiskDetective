@@ -1,6 +1,7 @@
 """Disk Detective - see what is using your disk space, what it is, and whether it is safe to delete.
 
-It only ever *moves* things to the Recycle Bin, and only items rated "safe to delete", and only when you confirm.
+It only ever removes items rated "safe to delete" (to the Recycle Bin, or permanently), never anything holding saved
+logins/cookies/keys, and only after you confirm.
 """
 import ctypes
 import json
@@ -220,6 +221,8 @@ class DiskDetective:
         st.configure('Treeview.Heading', font=('Segoe UI', 9, 'bold'))
         st.configure('Accent.TButton', font=('Segoe UI', 10, 'bold'), padding=(18, 5))
         st.configure('Clean.TButton', font=('Segoe UI', 10, 'bold'))
+        st.configure('Danger.TButton', font=('Segoe UI', 10, 'bold'), foreground='#ff8a8a' if name == 'dark' else '#b3261e')
+        st.map('Danger.TButton', foreground=[('disabled', t['muted'])])
         st.configure('Title.TLabel', font=('Segoe UI', 15, 'bold'))
         st.configure('Muted.TLabel', foreground=t['muted'])
         st.configure('Bold.TLabel', font=('Segoe UI', 10, 'bold'))
@@ -319,7 +322,7 @@ class DiskDetective:
 
         # footer widgets are packed first so the expanding pane below can never squeeze them out
         ttk.Label(root, text='Advice is based on built-in rules of thumb, not a guarantee. When in doubt, don\'t delete. '
-                  'Cleaning only moves safe-rated items to the Recycle Bin.', style='Muted.TLabel',
+                  'Cleaning is limited to items rated safe, and always asks first.', style='Muted.TLabel',
                   padding=(14, 0, 14, 8)).pack(side='bottom', fill='x')
         bar = ttk.Frame(root, padding=(14, 4, 14, 4))
         bar.pack(side='bottom', fill='x')
@@ -373,7 +376,10 @@ class DiskDetective:
         self.btn_wins_clean = ttk.Button(wtop, text='Clean selected \u2192 Recycle Bin', style='Clean.TButton',
                                          command=self.clean_selected, state='disabled')
         self.btn_wins_clean.pack(side='right')
-        ttk.Button(wtop, text='Select all', command=self._wins_select_all).pack(side='right', padx=6)
+        self.btn_wins_delete = ttk.Button(wtop, text='Delete permanently…', style='Danger.TButton',
+                                          command=self.delete_selected, state='disabled')
+        self.btn_wins_delete.pack(side='right', padx=6)
+        ttk.Button(wtop, text='Select all', command=self._wins_select_all).pack(side='right')
         self.wins = self._make_tree(tab3, 'headings', [
             ('name', 'Folder', 420, 'w'), ('size', 'Size', 90, 'e'), ('what', 'What it is', 220, 'w'),
             ('how', 'How to clean it', 380, 'w')], stretch='how', multi=True)
@@ -386,9 +392,12 @@ class DiskDetective:
         self.btn_copy = ttk.Button(btns, text='Copy path', command=lambda: self.copy_path(self.current), state='disabled')
         self.btn_web = ttk.Button(btns, text='Search the web', command=lambda: self.search_web(self.current), state='disabled')
         self.btn_clean = ttk.Button(btns, text='Move to Recycle Bin', style='Clean.TButton', command=self.clean_selected, state='disabled')
+        self.btn_delete = ttk.Button(btns, text='Delete permanently…', style='Danger.TButton', command=self.delete_selected,
+                                     state='disabled')
         for b in (self.btn_open, self.btn_copy, self.btn_web):
             b.pack(fill='x', pady=2)
         self.btn_clean.pack(fill='x', pady=(10, 2))
+        self.btn_delete.pack(fill='x', pady=2)
         dscroll = ttk.Scrollbar(dframe, orient='vertical')
         dscroll.pack(side='right', fill='y')
         self.detail = tk.Text(dframe, height=10, wrap='word', relief='flat', borderwidth=0, padx=10, pady=8,
@@ -716,7 +725,10 @@ class DiskDetective:
         metas = self.selection
         can = bool(metas) and all(self._cleanable(m) for m in metas)
         self.btn_clean.config(state='normal' if can else 'disabled')
-        self.btn_wins_clean.config(state='normal' if can and self.wins.selection() else 'disabled')
+        self.btn_delete.config(state='normal' if can else 'disabled')
+        in_wins = 'normal' if can and self.wins.selection() else 'disabled'
+        self.btn_wins_clean.config(state=in_wins)
+        self.btn_wins_delete.config(state=in_wins)
         if len(metas) > 1:
             text = f'Clean {len(metas)} items \u2192 Recycle Bin'
         elif metas and not metas[0].is_dir:
@@ -748,7 +760,8 @@ class DiskDetective:
         levels = {m.info.level for m in metas}
         if levels == {K.SAFE}:
             t.insert('end', 'All of them are rated safe to delete. ', 'gap')
-            t.insert('end', 'Press "Clean" to move their contents to the Recycle Bin (you will be asked to confirm first).')
+            t.insert('end', 'Move their contents to the Recycle Bin (recoverable), or delete them permanently - '
+                     'you will be asked to confirm first.')
         else:
             t.insert('end', 'The selection mixes different kinds of items, so cleaning is disabled. Select only items rated "Safe to delete".', 'gap')
         t.configure(state='disabled')
@@ -825,7 +838,11 @@ class DiskDetective:
             webbrowser.open('https://www.google.com/search?q=' + urllib.parse.quote_plus(query))
 
     # --------------------------------------------------------------- cleaning
-    def clean_selected(self):
+    def delete_selected(self):
+        self.clean_selected(permanent=True)
+
+    def clean_selected(self, permanent=False):
+        """Move the selected safe-rated items to the Recycle Bin - or, with permanent=True, delete them for good."""
         if self.busy or not self.scan_done:
             return
         # work from the tab the user is looking at, so "selection" means what they can see highlighted
@@ -860,29 +877,40 @@ class DiskDetective:
         for m in checked:
             targets += cleaner.targets_for(m.path, m.is_dir)
         if not targets:
-            messagebox.showinfo(APP, 'Nothing to move - the selected folders are already empty.')
+            messagebox.showinfo(APP, 'Nothing to remove - the selected folders are already empty.')
             return
         total = sum(m.size for m in checked)
         lines = [f'  \u2022 {shorten(m.path, 62)}  ({fmt_size(m.size)})' for m in sorted(checked, key=lambda m: -m.size)[:8]]
         if len(checked) > 8:
             lines.append(f'  \u2026 and {len(checked) - 8:,} more')
-        msg = (f'Move to the Recycle Bin?\n\n' + '\n'.join(lines) + f'\n\nTotal: {fmt_size(total)} in {len(checked):,} item(s).\n\n'
-               'For folders, only what is inside is moved; the folder itself stays. '
-               'Everything can be restored from the Recycle Bin, and the disk space is only released when you empty it.')
+        summary = '\n'.join(lines) + f'\n\nTotal: {fmt_size(total)} in {len(checked):,} item(s).\n\n'
+        if permanent:
+            msg = ('PERMANENTLY delete?\n\n' + summary +
+                   'This CANNOT be undone: nothing goes to the Recycle Bin. For folders, everything inside is deleted '
+                   'and the folder itself stays. The space is freed immediately.\n\nDelete them for good?')
+        else:
+            msg = ('Move to the Recycle Bin?\n\n' + summary +
+                   'For folders, only what is inside is moved; the folder itself stays. '
+                   'Everything can be restored from the Recycle Bin, and the disk space is only released when you empty it.')
         if not messagebox.askyesno(APP, msg, icon='warning', default='no'):
             return
+        verb = 'Deleting' if permanent else 'Moving to the Recycle Bin'
         self.busy = True
         self._set_buttons()
         self.scan_btn.config(state='disabled')
         before = self.scanner.root_node.size
-        self.status.set('Moving to the Recycle Bin\u2026')
+        self.status.set(verb + '\u2026')
         self.progress.config(mode='indeterminate')
         self.progress.start(15)
-        job = {'done': False, 'left': 0, 'aborted': False, 'error': None, 'stage': 'Moving to the Recycle Bin\u2026'}
+        job = {'done': False, 'left': 0, 'aborted': False, 'error': None, 'stage': verb + '\u2026', 'permanent': permanent,
+               'failed': []}
 
         def work():                          # runs off the UI thread: never touch Tk widgets or variables in here
             try:
-                _ok, job['aborted'] = cleaner.recycle_in_chunks(targets)
+                if permanent:
+                    _removed, job['failed'] = cleaner.delete_permanently(targets)
+                else:
+                    _ok, job['aborted'] = cleaner.recycle_in_chunks(targets)
                 job['left'] = sum(1 for t in targets if os.path.lexists(t))
                 job['stage'] = 'Updating the numbers\u2026'
                 touched = {m.path if m.is_dir else os.path.dirname(m.path) for m in checked}
@@ -913,9 +941,20 @@ class DiskDetective:
         moved = n_targets - job['left']
         note = ''
         if job['left']:
-            note = f' {job["left"]:,} item(s) could not be moved (in use or access denied - close the program, or try administrator mode).'
+            note = (f' {job["left"]:,} item(s) could not be {"deleted" if job["permanent"] else "moved"} '
+                    '(in use or access denied - close the program, or try administrator mode).')
+            reasons = sorted({(getattr(e, 'strerror', None) or str(e)) for _p, e in job['failed']})[:2]
+            if reasons:
+                note += ' Windows said: ' + '; '.join(reasons) + '.'
         if job['aborted']:
             note += ' The operation was cancelled.'
+        if job['permanent']:
+            self.status.set(f'Deleted {moved:,} item(s) \u00b7 {fmt_size(freed)} freed.' + note)
+            if job['error'] is not None:
+                messagebox.showerror(APP, f'Something went wrong while deleting:\n\n{job["error"]}')
+            elif job['left']:
+                messagebox.showwarning(APP, f'Deleted {moved:,} item(s) ({fmt_size(freed)} freed).\n\n{note.strip()}')
+            return
         self.status.set(f'Moved {moved:,} item(s) to the Recycle Bin \u00b7 {fmt_size(freed)} less here.' + note)
         if job['error'] is not None:
             messagebox.showerror(APP, f'Something went wrong while cleaning:\n\n{job["error"]}')
